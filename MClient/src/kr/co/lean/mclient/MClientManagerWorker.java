@@ -7,6 +7,7 @@ import java.util.TimerTask;
 
 import kr.co.lean.mclient.message.AckMessage;
 import kr.co.lean.mclient.message.DefaultMessage;
+import kr.co.lean.mclient.message.InboxAckMessage;
 import kr.co.lean.mclient.message.InboxMessage;
 import kr.co.lean.mclient.message.LoginMessage;
 import android.util.Log;
@@ -26,25 +27,42 @@ public class MClientManagerWorker {
 	private ArrayList<DefaultMessage> mSendingList;
 	private HashMap<String, Timer> mTimeoutTimerMap;
 
+	private int mRemainMessageCount = 0;
+
+	public String cv = "";
+	public String atype = "";
+	public String id = "";
+	public String pw = "";
+
 	public MClientManagerWorker(MClientManager mClientManager) {
 		mMClientManager = mClientManager;
 		mSendingList = new ArrayList<DefaultMessage>();
 		mTimeoutTimerMap = new HashMap<String, Timer>();
 	}
-	
-	
-	//////////////////////////////////////////////////////////////////////////////
-	///////////////////////////////// Connect /////////////////////////////////
-	//////////////////////////////////////////////////////////////////////////////
+
+	public void setup(String deviceinfo, String uid, String cv, String atype, String id, String pw) {
+		DefaultMessage.deviceinfo = deviceinfo;
+		DefaultMessage.uid = uid;
+		this.cv = cv;
+		this.atype = atype;
+		this.id = id;
+		this.pw = pw;
+	}
+
+	// ////////////////////////////////////////////////////////////////////////////
+	// /////////////////////////////// Connect /////////////////////////////////
+	// ////////////////////////////////////////////////////////////////////////////
 
 	public synchronized void connect() {
 		if (mConnecting)
 			return;
+		if (!canConnect())
+			return;
+		mConnecting = true;
 		new Thread(new Runnable() {
 			@Override
 			public void run() {
 				try {
-					mConnecting = true;
 					mSocketInterface = new SocketInterface("dev.lean.co.kr", 20443, mMClientManager);
 					mSendThread = new SendThread(mSocketInterface, mMClientManager);
 					mReceiveThread = new ReceiveThread(mSocketInterface, mMClientManager);
@@ -61,11 +79,21 @@ public class MClientManagerWorker {
 		}).start();
 	}
 
+	private boolean canConnect() {
+		if (NetworkBroadcastReceiver.getNetworkState() > 0) {
+			return true;
+		} else {
+			return false;
+		}
+	}
+
 	public void disconnect() {
-		mSocketInterface.close();
-		mSendThread.interrupt();
-		mReceiveThread.interrupt();
-		disable();
+		if (mEnabled) {
+			mSocketInterface.close();
+			mSendThread.interrupt();
+			mReceiveThread.interrupt();
+			disable();
+		}
 	}
 
 	public void reconnecct() {
@@ -81,11 +109,11 @@ public class MClientManagerWorker {
 	private void enable() {
 		mEnabled = true;
 	}
-	
-	
-	//////////////////////////////////////////////////////////////////////////////
-	/////////////////////////////////// Send ///////////////////////////////////
-	//////////////////////////////////////////////////////////////////////////////
+
+	// ////////////////////////////////////////////////////////////////////////////
+	// ///////////////////////////////// Send
+	// ///////////////////////////////////
+	// ////////////////////////////////////////////////////////////////////////////
 
 	private void addMessageToSendingList(DefaultMessage message) {
 		mSendingList.add(message);
@@ -100,15 +128,19 @@ public class MClientManagerWorker {
 		}
 	}
 
-	private void addMessageToSendThread(DefaultMessage message) {
-		startTimeoutTimer(message);
+	private void addMessageToSendThread(DefaultMessage message, boolean resend) {
+		if (resend) {
+			startTimeoutTimer(message);
+		}
 		mSendThread.send(message);
 	}
 
-	private void checkAndaddMessageToSendThread(DefaultMessage message) {
-		addMessageToSendingList(message);
+	private void checkAndaddMessageToSendThread(DefaultMessage message, boolean resend) {
+		if (resend) {
+			addMessageToSendingList(message);
+		}
 		if (mEnabled) {
-			addMessageToSendThread(message);
+			addMessageToSendThread(message, resend);
 		} else {
 			if (!mConnecting) {
 				connect();
@@ -118,23 +150,23 @@ public class MClientManagerWorker {
 
 	private void resendSendingMessage() {
 		for (DefaultMessage sendMessage : mSendingList) {
-			addMessageToSendThread(sendMessage);
+			addMessageToSendThread(sendMessage, true);
 		}
 	}
 
 	private void login() {
-		addMessageToSendThread(new LoginMessage());
+		addMessageToSendThread(new LoginMessage(cv, atype, id, pw), true);
 	}
 
-	public void sendMessage(DefaultMessage message) {
-		checkAndaddMessageToSendThread(message);
+	public void sendMessage(DefaultMessage message, boolean resend) {
+		checkAndaddMessageToSendThread(message, resend);
 	}
 
-	
-	//////////////////////////////////////////////////////////////////////////////
-	////////////////////////////////// Receive /////////////////////////////////
-	//////////////////////////////////////////////////////////////////////////////
-	
+	// ////////////////////////////////////////////////////////////////////////////
+	// //////////////////////////////// Receive
+	// /////////////////////////////////
+	// ////////////////////////////////////////////////////////////////////////////
+
 	public void onReceiveAckMessage(AckMessage message) {
 		removeMessageFromSendList(message.getMessageId());
 		cancelTimeoutTimer(message.getMessageId());
@@ -155,15 +187,21 @@ public class MClientManagerWorker {
 	private void onReceiveLoginAckMessage() {
 		resendSendingMessage();
 	}
-	
+
 	public void onReceiveInboxMessage(InboxMessage message) {
-		
+		mRemainMessageCount = message.getCount();
 	}
-	
-	
-	//////////////////////////////////////////////////////////////////////////////
-	///////////////////////////////// Timeout /////////////////////////////////
-	//////////////////////////////////////////////////////////////////////////////
+
+	public synchronized void onReceiveMessage() {
+		mRemainMessageCount--;
+		if (mRemainMessageCount == 0) {
+			sendMessage(new InboxAckMessage(), false);
+		}
+	}
+
+	// ////////////////////////////////////////////////////////////////////////////
+	// /////////////////////////////// Timeout /////////////////////////////////
+	// ////////////////////////////////////////////////////////////////////////////
 
 	private void startTimeoutTimer(final DefaultMessage message) {
 		Timer timer = new Timer();
@@ -173,7 +211,7 @@ public class MClientManagerWorker {
 				Log.d(TAG, "timeout " + message.toString());
 				mMClientManager.onTimeout(message);
 			}
-		}, 10000);
+		}, getTimeout());
 		mTimeoutTimerMap.put(message.getMessageId(), timer);
 	}
 
@@ -186,6 +224,10 @@ public class MClientManagerWorker {
 				e.printStackTrace();
 			}
 		}
+	}
+
+	private int getTimeout() {
+		return 10000;
 	}
 
 	public interface OnTimeoutListener {

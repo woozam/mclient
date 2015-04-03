@@ -24,39 +24,47 @@ public class MClientManager implements OnReceiveListener, OnSocketErrorListener,
 		return sMClientManager;
 	}
 
-	public static String deviceinfo = "A0";
-	public static String uid = "JP000000000012";
-
 	private MClientManagerWorker mMClientManagerWorker;
 
 	private MClientManager() {
 		mMClientManagerWorker = new MClientManagerWorker(this);
 	}
 
+	public void setup(String deviceinfo, String uid, String cv, String atype, String id, String pw) {
+		mMClientManagerWorker.setup(deviceinfo, uid, cv, atype, id, pw);
+		reconnect();
+	}
+
 	public void sendMessage(DefaultMessage message) {
-		mMClientManagerWorker.sendMessage(message);
+		mMClientManagerWorker.sendMessage(message, true);
 	}
 
 	public void keepAlive() {
-		sendMessage(new KeepAliveMessage());
+		mMClientManagerWorker.sendMessage(new KeepAliveMessage(), false);
+	}
+	
+	public void reconnect() {
+		mMClientManagerWorker.reconnecct();
 	}
 
 	@Override
 	public void onSend(boolean success, DefaultMessage message) {
+		onLog(String.format("[C->M] %s %s", String.valueOf(success), message.toString()));
 	}
 
 	@Override
 	public void onReceive(String message) {
 		if (message != null && message.length() > 0) {
+			onLog(String.format("[M->C] %s", message.toString()));
 			char header = message.charAt(0);
 			switch (header) {
-			// ·Î±×ÀÎ ack
+			// ack
 			case 'A':
 				AckMessage ackMessage = new AckMessage(message);
 				mMClientManagerWorker.onReceiveAckMessage(ackMessage);
 				break;
 			case 'Z':
-				// ¼ö½ÅÇÔ
+				// ìˆ˜ì‹ í•¨
 				InboxMessage inboxMessage = new InboxMessage(message);
 				mMClientManagerWorker.onReceiveInboxMessage(inboxMessage);
 				break;
@@ -71,6 +79,10 @@ public class MClientManager implements OnReceiveListener, OnSocketErrorListener,
 					// volatile
 					break;
 				}
+				mMClientManagerWorker.onReceiveMessage();
+				break;
+			default:
+				mMClientManagerWorker.onReceiveMessage();
 				break;
 			}
 		}
@@ -78,11 +90,27 @@ public class MClientManager implements OnReceiveListener, OnSocketErrorListener,
 
 	@Override
 	public void onSocketError(int reason) {
-		mMClientManagerWorker.reconnecct();
+		reconnect();
 	}
 
 	@Override
 	public void onTimeout(DefaultMessage message) {
-		mMClientManagerWorker.reconnecct();
+		reconnect();
+	}
+	
+	public interface OnLogListener {
+		void onLog(String log);
+	}
+	
+	private OnLogListener mOnLogListener;
+	
+	public void setOnLogListener(OnLogListener l) {
+		mOnLogListener = l;
+	}
+	
+	private void onLog(String log) {
+		if (mOnLogListener != null) {
+			mOnLogListener.onLog(log);
+		}
 	}
 }
